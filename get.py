@@ -8,6 +8,11 @@ import csv, os
 from datetime import datetime
 import sqlalchemy
 import psycopg2
+from configparser import ConfigParser
+
+parser = ConfigParser()
+parser.read('caiso.config')
+DB_PATH = parser['db_info']['DB_PATH']
 
 #General CAISO stats
 URL = "https://www.caiso.com/outlook/SP/stats.txt?_=1657108858287"
@@ -81,7 +86,7 @@ def log_data(df1 : pd.DataFrame, df2 : pd.DataFrame) -> None:
     return agg
 
 final = log_data(demand, fuel)
-engine = sqlalchemy.create_engine('postgresql://daniels27:Covington27!@dschne-project.cbp5ni8qazfh.us-east-1.rds.amazonaws.com:5432/caisostats')
+engine = sqlalchemy.create_engine(DB_PATH)
 try:
     final.to_sql('demand', con=engine, if_exists='append', index=False)
 except (Exception, psycopg2.DatabaseError) as error:
