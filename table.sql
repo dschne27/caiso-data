@@ -1,0 +1,23 @@
+CREATE TABLE demand (
+	id INT NOT NULL,
+	date_in date, 
+	time_in time,
+	hour_forecast int,
+	current_demand int,
+	net_demand int,
+	net_demand_forecast int,
+	demand_response int,
+	solar int,
+	wind int,
+	geothermal int,
+	biomass int,
+	biogas int,
+	small_hydro int,
+	coal int,
+	nuclear int,
+	natural_gas int,
+	large_hydro int,
+	batteries int,
+	imports int,
+	other int
+);
