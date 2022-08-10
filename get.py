@@ -2,13 +2,16 @@
 
 import requests
 import pandas as pd
-import csv, os
+import csv
+import os
 from datetime import date, datetime, timedelta
 import sqlalchemy
 from sqlalchemy import text
+from sqlalchemy.dialects.postgresql import insert
 import psycopg2
 from configparser import ConfigParser
 import sys
+import uuid
 
 parser = ConfigParser()
 parser.read('caiso.config')
@@ -78,20 +81,74 @@ def run():
     final = log_data(demand, fuel, target_date)
     engine = sqlalchemy.create_engine(DB_PATH)
 
-    query = text(f""" INSERT INTO public.demand VALUES 
+    #Insert new rows of data
+    insert_query = text(f""" INSERT INTO public.demand VALUES 
                     {','.join([str(i) for i in list(final.to_records(index=False))])} """)
-    engine.connect().execute(query)
+    engine.connect().execute(insert_query)
 
-    # try:
-        
-    #     final.to_sql('demand', con=engine, if_exists='replace', index=False, dtype=dtypes)
-    # except (Exception, psycopg2.DatabaseError) as error:
-    #     print(error)
+
+
 
     message = "Successfully ran at {}".format(datetime.now())
     print(message)
 
 
+# https://gist.github.com/pedrovgp/b46773a1240165bf2b1448b3f70bed32
+def upsert_df(df: pd.DataFrame, table_name: str, engine: sqlalchemy.engine.Engine):
+    """Implements the equivalent of pd.DataFrame.to_sql(..., if_exists='update')
+    (which does not exist). Creates or updates the db records based on the
+    dataframe records.
+    Conflicts to determine update are based on the dataframes index.
+    This will set unique keys constraint on the table equal to the index names
+    1. Create a temp table from the dataframe
+    2. Insert/update from temp table into table_name
+    Returns: True if successful
+    """
+
+    # If the table does not exist, we should just use to_sql to create it
+    if not engine.execute(
+        f"""SELECT EXISTS (
+            SELECT FROM information_schema.tables 
+            WHERE  table_schema = 'public'
+            AND    table_name   = '{table_name}');
+            """
+    ).first()[0]:
+        df.to_sql(table_name, engine)
+        return True
+
+    # If it already exists...
+    temp_table_name = f"temp_{uuid.uuid4().hex[:6]}"
+    df.to_sql(temp_table_name, engine, index=True)
+
+    index = list(df.index.names)
+    index_sql_txt = ", ".join([f'"{i}"' for i in index])
+    columns = list(df.columns)
+    headers = index + columns
+    headers_sql_txt = ", ".join(
+        [f'"{i}"' for i in headers]
+    )  # index1, index2, ..., column 1, col2, ...
+
+    # col1 = exluded.col1, col2=excluded.col2
+    update_column_stmt = ", ".join([f'"{col}" = EXCLUDED."{col}"' for col in columns])
+
+    # For the ON CONFLICT clause, postgres requires that the columns have unique constraint
+    query_pk = f"""
+    ALTER TABLE "{table_name}" DROP CONSTRAINT IF EXISTS unique_constraint_for_upsert_{table_name};
+    ALTER TABLE "{table_name}" ADD CONSTRAINT unique_constraint_for_upsert_{table_name} UNIQUE ({index_sql_txt});
+    """
+    engine.execute(query_pk)
+
+    # Compose and execute upsert query
+    query_upsert = f"""
+    INSERT INTO "{table_name}" ({headers_sql_txt}) 
+    SELECT {headers_sql_txt} FROM "{temp_table_name}"
+    ON CONFLICT ({index_sql_txt}) DO UPDATE 
+    SET {update_column_stmt};
+    """
+    engine.execute(query_upsert)
+    engine.execute(f"DROP TABLE {temp_table_name}")
+
+    return True
 
 
 
@@ -119,8 +176,8 @@ def create_df(array : list, headers : list) -> pd.DataFrame:
 
 
 
-#Creates combined dataset and converts to csv
-def log_data(df1 : pd.DataFrame, df2 : pd.DataFrame, target_date : datetime) -> None:
+#Creates combined dataframe, converts it to a csv, and returns final dataframe
+def log_data(df1 : pd.DataFrame, df2 : pd.DataFrame, target_date : datetime) -> pd.DataFrame:
     agg = df1.merge(df2, how='left', on='Time')
     agg.insert(0, 'date_in', target_date)
 
@@ -149,9 +206,10 @@ def log_data(df1 : pd.DataFrame, df2 : pd.DataFrame, target_date : datetime) -> 
     agg.fillna(0, inplace=True)
     agg.replace("", 0, inplace=True)
 
-    # drop second midnight (last row of df) entry which ruins values
+    # drop second midnight entry (last row of df) which ruins values
     agg.drop([288], axis=0, inplace=True)
     path = "/Users/danielschneider/DataEng/caiso/data"
+    # ec2_path = "/home/ec2-user/data/caiso/data"
     fpath = os.path.join(path, "stats-{}.csv".format(target_date.strftime('%Y-%m-%d')))
     agg.to_csv(fpath)
 
